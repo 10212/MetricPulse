@@ -1,0 +1,133 @@
+﻿# =============================================================================
+# MetricPluse 业务拓扑配置文件
+# =============================================================================
+# Node: 业务组件节点
+#   id            — 唯一标识（与 metrics.yaml 中的 service 字段对应）
+#   name          — 显示名称
+#   node_type     — 节点类型：service | database | queue | cache | external
+#   description   — 描述
+#
+# Edge: 有向依赖边（from -> to 表示 from 依赖 to）
+#   from_id       — 消费方 / 上游
+#   to_id         — 被依赖方 / 下游
+#   weight        — 依赖权重：critical | high | medium | low
+#   description   — 依赖描述
+# =============================================================================
+
+nodes:
+  - id: "api-gateway"
+    name: "API 网关"
+    node_type: service
+    description: "统一入口网关，负责路由与认证"
+
+  - id: "order-service"
+    name: "订单服务"
+    node_type: service
+    description: "订单创建与管理"
+
+  - id: "payment-service"
+    name: "支付服务"
+    node_type: service
+    description: "支付处理与清算"
+
+  - id: "inventory-service"
+    name: "库存服务"
+    node_type: service
+    description: "库存管理与扣减"
+
+  - id: "notification-service"
+    name: "通知服务"
+    node_type: service
+    description: "消息推送与邮件通知"
+
+  - id: "user-service"
+    name: "用户服务"
+    node_type: service
+    description: "用户账户管理"
+
+  - id: "postgres-primary"
+    name: "PostgreSQL 主库"
+    node_type: database
+    description: "主数据库"
+
+  - id: "redis-cache"
+    name: "Redis 缓存"
+    node_type: cache
+    description: "热点数据缓存"
+
+  - id: "kafka-broker"
+    name: "Kafka 消息队列"
+    node_type: queue
+    description: "异步消息中间件"
+
+edges:
+  # 网关依赖下游服务
+  - from_id: "api-gateway"
+    to_id: "order-service"
+    weight: critical
+    description: "网关转发订单请求"
+
+  - from_id: "api-gateway"
+    to_id: "payment-service"
+    weight: critical
+    description: "网关转发支付请求"
+
+  - from_id: "api-gateway"
+    to_id: "user-service"
+    weight: high
+    description: "网关转发用户请求"
+
+  # 订单服务依赖
+  - from_id: "order-service"
+    to_id: "payment-service"
+    weight: critical
+    description: "下单后触发支付"
+
+  - from_id: "order-service"
+    to_id: "inventory-service"
+    weight: critical
+    description: "下单前校验库存"
+
+  - from_id: "order-service"
+    to_id: "postgres-primary"
+    weight: critical
+    description: "订单数据持久化"
+
+  - from_id: "order-service"
+    to_id: "redis-cache"
+    weight: high
+    description: "订单查询缓存"
+
+  - from_id: "order-service"
+    to_id: "notification-service"
+    weight: medium
+    description: "订单状态变更通知"
+
+  # 支付服务依赖
+  - from_id: "payment-service"
+    to_id: "postgres-primary"
+    weight: critical
+    description: "支付数据持久化"
+
+  # 库存服务依赖
+  - from_id: "inventory-service"
+    to_id: "postgres-primary"
+    weight: critical
+    description: "库存数据持久化"
+
+  - from_id: "inventory-service"
+    to_id: "redis-cache"
+    weight: high
+    description: "库存缓存"
+
+  # 通知服务依赖
+  - from_id: "notification-service"
+    to_id: "kafka-broker"
+    weight: critical
+    description: "消息异步投递"
+
+  # 跨服务通信
+  - from_id: "order-service"
+    to_id: "kafka-broker"
+    weight: high
+    description: "订单事件发布"

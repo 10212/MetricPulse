@@ -1,0 +1,130 @@
+﻿# =============================================================================
+# MetricPluse 监控指标配置文件
+# =============================================================================
+# 每个指标配置包含：
+#   id            — 唯一标识
+#   category      — 指标大类：latency | error_rate | throughput | saturation | custom
+#   metric_name   — Prometheus 指标名
+#   description   — 业务语义描述
+#   service       — 关联的业务服务（与 topology.yaml 中的 Node.id 对应）
+#   labels        — Prometheus 标签过滤
+#   thresholds    — 告警阈值
+#   extra         — 扩展字段（如 promql_fragment 注入额外 PromQL）
+# =============================================================================
+
+metrics:
+
+  - id: "gateway_latency_p99"
+    category: latency
+    metric_name: "http_request_duration_seconds"
+    description: "网关 P99 延迟"
+    service: "api-gateway"
+    labels:
+      job: "api-gateway"
+    thresholds:
+      - operator: "gt"
+        value: 0.5
+        severity: warning
+        description: "P99 > 500ms"
+      - operator: "gt"
+        value: 1.0
+        severity: critical
+        description: "P99 > 1s"
+
+  - id: "gateway_error_rate"
+    category: error_rate
+    metric_name: "http_requests_total"
+    description: "网关错误率"
+    service: "api-gateway"
+    labels:
+      job: "api-gateway"
+      status: "5xx"
+    thresholds:
+      - operator: "gt"
+        value: 0.01
+        severity: warning
+        description: "错误率 > 1%"
+      - operator: "gt"
+        value: 0.05
+        severity: critical
+        description: "错误率 > 5%"
+
+  - id: "payment_latency_p99"
+    category: latency
+    metric_name: "http_request_duration_seconds"
+    description: "支付服务 P99 延迟"
+    service: "payment-service"
+    labels:
+      job: "payment"
+    thresholds:
+      - operator: "gt"
+        value: 0.3
+        severity: warning
+        description: "P99 > 300ms"
+      - operator: "gt"
+        value: 0.8
+        severity: critical
+        description: "P99 > 800ms"
+
+  - id: "payment_error_rate"
+    category: error_rate
+    metric_name: "http_requests_total"
+    description: "支付服务错误率"
+    service: "payment-service"
+    labels:
+      job: "payment"
+      status: "5xx"
+    thresholds:
+      - operator: "gt"
+        value: 0.005
+        severity: critical
+        description: "错误率 > 0.5%"
+
+  - id: "order_latency_p99"
+    category: latency
+    metric_name: "http_request_duration_seconds"
+    description: "订单服务 P99 延迟"
+    service: "order-service"
+    labels:
+      job: "order"
+    thresholds:
+      - operator: "gt"
+        value: 0.4
+        severity: warning
+        description: "P99 > 400ms"
+
+  - id: "db_connection_pool_saturation"
+    category: saturation
+    metric_name: "db_connection_pool_used"
+    description: "数据库连接池使用率"
+    service: "postgres-primary"
+    labels:
+      job: "postgres"
+    thresholds:
+      - operator: "gt"
+        value: 80
+        severity: warning
+        description: "连接池 > 80%"
+      - operator: "gt"
+        value: 95
+        severity: critical
+        description: "连接池 > 95%"
+
+  - id: "redis_memory_usage"
+    category: saturation
+    metric_name: "redis_memory_used_bytes"
+    description: "Redis 内存使用率"
+    service: "redis-cache"
+    labels:
+      job: "redis"
+    extra:
+      promql_fragment: "/ redis_memory_max_bytes * 100"
+    thresholds:
+      - operator: "gt"
+        value: 80
+        severity: warning
+        description: "内存 > 80%"
+      - operator: "gt"
+        value: 90
+        severity: critical
+        description: "内存 > 90%"
