@@ -3,6 +3,8 @@
 整合 Prometheus 监控查询 + 业务拓扑图谱引擎，
 提供灵活可扩展的语义化指标配置与依赖链故障发现能力。
 
+内置 AI Agent 扩展层（基于 LangGraph），支持自然语言运维对话。
+
 Usage:
     import asyncio
     from metricpluse import OpsAgent, MetricConfig, MetricCategory, DependencyGraph
@@ -24,6 +26,15 @@ from .topology import (
     NodeType,
 )
 
+# AI 扩展（可选依赖 langgraph / langchain）
+try:
+    from .ai import AIChatAgent as _AIChatAgent
+    AIChatAgent = _AIChatAgent
+    _has_ai = True
+except ImportError:
+    AIChatAgent = None  # type: ignore[assignment]
+    _has_ai = False
+
 __all__ = [
     # Agent
     "OpsAgent",
@@ -44,4 +55,6 @@ __all__ = [
     "EdgeWeight",
     "FaultDiscovery",
     "FaultReport",
+    # AI (optional)
+    "AIChatAgent",
 ]
