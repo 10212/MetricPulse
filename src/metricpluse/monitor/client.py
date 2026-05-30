@@ -23,7 +23,7 @@ class QueryResult:
 
     config_id: str
     promql: str
-    value: float | None           # instant query 的单值
+    value: float | None = None           # instant query 的单值
     values: list[tuple[float, str]] = field(default_factory=list)  # range query
     raw: dict[str, Any] = field(default_factory=dict)
     timestamp: str = ""

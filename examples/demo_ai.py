@@ -2,8 +2,7 @@
 
 前置条件:
     pip install -e ".[ai]"
-    设置 OPENAI_API_KEY 环境变量
-    Prometheus 端点可用 (或使用 --offline 仅演示拓扑分析)
+    复制 .env.example 为 .env 并填入 OPENAI_API_KEY
 
 用法:
     python examples/demo_ai.py
@@ -16,6 +15,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+# ---- 自动加载 .env ----
+from dotenv import load_dotenv
+
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(env_path)
 
 from metricpluse.config_loader import load_metric_configs, load_topology
 
@@ -36,21 +41,30 @@ async def demo_ai_agent(offline: bool = False):
     # ---- 初始化 LLM ----
     from langchain_openai import ChatOpenAI
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
-        print("\n[ERROR] 请设置环境变量 OPENAI_API_KEY")
+        print("\n[ERROR] 未找到 OPENAI_API_KEY")
+        print("  请复制 .env.example 为 .env 并填入你的 API Key")
         return
 
-    llm = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0,
-        api_key=api_key,
-    )
+    api_base = os.getenv("OPENAI_API_BASE", "").strip()
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+    print(f"  API: {api_base if api_base else '(默认 OpenAI)'}")
+    print(f"  Model: {model}")
+
+    llm_kwargs = dict(model=model, temperature=0, api_key=api_key)
+    if api_base:
+        llm_kwargs["base_url"] = api_base
+
+    llm = ChatOpenAI(**llm_kwargs)
 
     # ---- 创建 Agent ----
     from metricpluse.ai import AIChatAgent
 
-    prometheus_url = "http://localhost:9090"
+    prometheus_url = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+    print(f"  Prometheus: {prometheus_url}")
+
     agent = AIChatAgent(
         llm=llm,
         metric_configs=configs,
@@ -72,34 +86,34 @@ async def demo_ai_agent(offline: bool = False):
         print(f"{'─' * 50}")
 
         if offline:
-            print("  (离线模式: 仅演示拓扑分析工具，不连接 Prometheus)")
-            # 离线模式下演示拓扑工具
-            from metricpluse.topology import FaultDiscovery
-            discovery = FaultDiscovery(graph)
-
-            if "postgres" in question.lower() or "拓扑" in question or "依赖" in question:
-                report = discovery.analyze("postgres-primary")
-                print(f"\n  {report.summary}")
-            elif "支付" in question and "状态" in question:
-                from metricpluse.ai.tools import create_tools
-                tools = create_tools(configs, graph, prometheus_url)
-                svc_tool = next(t for t in tools if t.name == "list_services")
-                metrics_tool = next(t for t in tools if t.name == "list_metrics")
-                print(f"\n{svc_tool.invoke({})}")
-                print(f"\n{metrics_tool.invoke({})}")
-            else:
-                from metricpluse.ai.tools import create_tools
-                tools = create_tools(configs, graph, prometheus_url)
-                for tool in tools:
-                    if tool.name in ("list_services", "list_metrics"):
-                        print(f"\n{tool.invoke({})}")
+            _offline_answer(question, configs, graph, prometheus_url)
             continue
 
-        # 在线模式 — 流式输出
         print()
         async for chunk in agent.stream(question):
             print(chunk, end="", flush=True)
         print()
+
+
+def _offline_answer(question, configs, graph, prometheus_url):
+    """离线模式用工具直接回答，不连 Prometheus / LLM。"""
+    print("  (离线模式: 不连接 Prometheus / LLM)")
+    from metricpluse.topology import FaultDiscovery
+    from metricpluse.ai.tools import create_tools
+
+    discovery = FaultDiscovery(graph)
+    tools = create_tools(configs, graph, prometheus_url)
+
+    if "postgres" in question.lower() or "拓扑" in question or "依赖" in question:
+        report = discovery.analyze("postgres-primary")
+        print(f"\n  {report.summary}")
+    elif "支付" in question and "状态" in question:
+        svc_tool = next(t for t in tools if t.name == "list_services")
+        print(f"\n{svc_tool.invoke({})}")
+    else:
+        for tool in tools:
+            if tool.name in ("list_services", "list_metrics"):
+                print(f"\n{tool.invoke({})}")
 
 
 def main():

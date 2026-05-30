@@ -4,16 +4,18 @@
 提供灵活可扩展的语义化指标配置与依赖链故障发现能力。
 
 内置 AI Agent 扩展层（基于 LangGraph），支持自然语言运维对话。
+支持 .env 文件管理环境变量（OPENAI_API_KEY 等）。
 
 Usage:
-    import asyncio
-    from metricpluse import OpsAgent, MetricConfig, MetricCategory, DependencyGraph
+    from metricpluse import load_env, load_metric_configs, load_topology
 
-    agent = OpsAgent(prometheus_url="http://localhost:9090", graph=graph)
-    report = asyncio.run(agent.run(configs))
+    load_env()                          # 自动加载 .env
+    configs = load_metric_configs("config/metrics.yaml")
+    graph = load_topology("config/topology.yaml")
 """
 
 from .agent import AgentReport, MetricAlert, OpsAgent
+from .config_loader import load_env, load_metric_configs, load_topology
 from .monitor.config import MetricCategory, MetricConfig, Severity, Threshold
 from .monitor.client import PrometheusClient, QueryResult
 from .topology import (
@@ -36,6 +38,10 @@ except ImportError:
     _has_ai = False
 
 __all__ = [
+    # Config
+    "load_env",
+    "load_metric_configs",
+    "load_topology",
     # Agent
     "OpsAgent",
     "AgentReport",

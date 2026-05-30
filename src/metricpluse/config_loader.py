@@ -1,16 +1,35 @@
 ﻿"""YAML 配置加载器。
 
 从 config/metrics.yaml 和 config/topology.yaml 构建运行时对象。
+支持 .env 环境变量自动加载。
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 from metricpluse.monitor.config import MetricCategory, MetricConfig, Severity, Threshold
 from metricpluse.topology import DependencyGraph, Edge, EdgeWeight, Node, NodeType
+
+
+def load_env(env_path: str | Path | None = None) -> None:
+    """加载 .env 文件中的环境变量。
+
+    默认从当前工作目录的 .env 加载。
+    已设置的环境变量不会被覆盖。
+
+    .env 示例:
+        OPENAI_API_KEY=sk-xxx
+        OPENAI_MODEL=gpt-4o
+        PROMETHEUS_URL=http://localhost:9090
+    """
+    target = Path(env_path) if env_path else Path.cwd() / ".env"
+    if target.exists():
+        load_dotenv(target, override=False)
 
 
 def load_metric_configs(path: str | Path) -> list[MetricConfig]:
