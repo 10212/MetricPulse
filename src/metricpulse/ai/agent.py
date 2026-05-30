@@ -23,7 +23,7 @@ class AIChatAgent:
 
     用法:
         from langchain_openai import ChatOpenAI
-        from metricpluse.ai import AIChatAgent
+        from metricpulse.ai import AIChatAgent
 
         agent = AIChatAgent(
             llm=ChatOpenAI(model="gpt-4o"),

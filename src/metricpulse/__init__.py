@@ -1,4 +1,4 @@
-﻿"""metricpluse — 运维 Agent。
+﻿"""metricpulse — 运维 Agent。
 
 整合 Prometheus 监控查询 + 业务拓扑图谱引擎，
 提供灵活可扩展的语义化指标配置与依赖链故障发现能力。
@@ -7,7 +7,7 @@
 支持 .env 文件管理环境变量（OPENAI_API_KEY 等）。
 
 Usage:
-    from metricpluse import load_env, load_metric_configs, load_topology
+    from metricpulse import load_env, load_metric_configs, load_topology
 
     load_env()                          # 自动加载 .env
     configs = load_metric_configs("config/metrics.yaml")

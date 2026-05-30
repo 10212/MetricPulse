@@ -1,8 +1,8 @@
-﻿"""MetricPluse 运维 Agent — 命令行入口与示例。
+﻿"""MetricPulse 运维 Agent — 命令行入口与示例。
 
 用法：
     python examples/demo.py
-    或直接 import metricpluse 使用编程 API
+    或直接 import metricpulse 使用编程 API
 """
 
 import asyncio
@@ -11,9 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from metricpluse.config_loader import load_metric_configs, load_topology
-from metricpluse.agent import OpsAgent
-from metricpluse.topology import FaultDiscovery
+from metricpulse.config_loader import load_metric_configs, load_topology
+from metricpulse.agent import OpsAgent
+from metricpulse.topology import FaultDiscovery
 
 
 def demo_topology():

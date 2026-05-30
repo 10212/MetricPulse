@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(env_path)
 
-from metricpluse.config_loader import load_metric_configs, load_topology
+from metricpulse.config_loader import load_metric_configs, load_topology
 
 
 async def demo_ai_agent(offline: bool = False):
@@ -33,7 +33,7 @@ async def demo_ai_agent(offline: bool = False):
     graph = load_topology("config/topology.yaml")
 
     print("=" * 60)
-    print("MetricPluse AI Agent — LangGraph 运维对话")
+    print("MetricPulse AI Agent — LangGraph 运维对话")
     print("=" * 60)
     print(f"  指标: {len(configs)} 个")
     print(f"  拓扑: {graph.node_count} 节点, {graph.edge_count} 边")
@@ -60,7 +60,7 @@ async def demo_ai_agent(offline: bool = False):
     llm = ChatOpenAI(**llm_kwargs)
 
     # ---- 创建 Agent ----
-    from metricpluse.ai import AIChatAgent
+    from metricpulse.ai import AIChatAgent
 
     prometheus_url = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
     print(f"  Prometheus: {prometheus_url}")
@@ -98,8 +98,8 @@ async def demo_ai_agent(offline: bool = False):
 def _offline_answer(question, configs, graph, prometheus_url):
     """离线模式用工具直接回答，不连 Prometheus / LLM。"""
     print("  (离线模式: 不连接 Prometheus / LLM)")
-    from metricpluse.topology import FaultDiscovery
-    from metricpluse.ai.tools import create_tools
+    from metricpulse.topology import FaultDiscovery
+    from metricpulse.ai.tools import create_tools
 
     discovery = FaultDiscovery(graph)
     tools = create_tools(configs, graph, prometheus_url)

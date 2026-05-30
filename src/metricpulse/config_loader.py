@@ -12,8 +12,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from metricpluse.monitor.config import MetricCategory, MetricConfig, Severity, Threshold
-from metricpluse.topology import DependencyGraph, Edge, EdgeWeight, Node, NodeType
+from metricpulse.monitor.config import MetricCategory, MetricConfig, Severity, Threshold
+from metricpulse.topology import DependencyGraph, Edge, EdgeWeight, Node, NodeType
 
 
 def load_env(env_path: str | Path | None = None) -> None:

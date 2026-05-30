@@ -1,5 +1,5 @@
 ﻿[project]
-name = "metricpluse"
+name = "metricpulse"
 version = "0.2.0"
 description = "运维Agent — Prometheus监控查询 + 业务拓扑图谱引擎 + LangGraph AI对话"
 requires-python = ">=3.10"

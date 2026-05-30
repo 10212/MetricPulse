@@ -1,4 +1,4 @@
-﻿# MetricPluse — 运维 Agent
+﻿# MetricPulse — 运维 Agent
 
 基于 Python 的智能运维 Agent，整合 **Prometheus 监控查询** + **业务拓扑图谱引擎** + **LangGraph AI 对话**，
 支持语义化指标配置、依赖链故障发现、自然语言运维交互。
@@ -6,8 +6,8 @@
 ## 架构
 
 ```
-MetricPluse/
-├── src/metricpluse/
+MetricPulse/
+├── src/metricpulse/
 │   ├── agent.py              # OpsAgent 编排层
 │   ├── config_loader.py      # YAML 配置 + .env 加载
 │   ├── monitor/              # 监控查询模块
@@ -42,7 +42,7 @@ MetricPluse/
 `MetricConfig` 将 Prometheus 指标查询包装为携带业务语义的配置对象，`QueryBuilder` 自动编译为标准 PromQL：
 
 ```python
-from metricpluse import MetricConfig, MetricCategory, Threshold, Severity
+from metricpulse import MetricConfig, MetricCategory, Threshold, Severity
 
 MetricConfig(
     id="gateway_latency_p99",
@@ -75,7 +75,7 @@ MetricConfig(
 - **Successors** → 下游依赖（候选根因）
 
 ```python
-from metricpluse import DependencyGraph, Node, Edge, EdgeWeight, FaultDiscovery
+from metricpulse import DependencyGraph, Node, Edge, EdgeWeight, FaultDiscovery
 
 graph = DependencyGraph().build(nodes, edges)
 discovery = FaultDiscovery(graph)
@@ -96,8 +96,8 @@ print(joint.possible_root_causes)  # ['Postgres']
 
 ```python
 from langchain_openai import ChatOpenAI
-from metricpluse import load_env, load_metric_configs, load_topology
-from metricpluse.ai import AIChatAgent
+from metricpulse import load_env, load_metric_configs, load_topology
+from metricpulse.ai import AIChatAgent
 
 load_env()  # 自动加载 .env → OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL
 configs = load_metric_configs("config/metrics.yaml")
