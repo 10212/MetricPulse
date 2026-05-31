@@ -1,8 +1,8 @@
-﻿"""OpsAgent — 运维 Agent 编排层。
+"""OpsAgent — 运维 Agent 编排层。
 
 整合 Monitor（监控查询）与 Topology（拓扑分析）：
 1. 根据 MetricConfig 列表查询 Prometheus
-2. 评估阈值，识别异常指标
+2. 评估阈值（支持即时判定 + 滑动窗口持续判定），识别异常指标
 3. 对异常指标关联的服务，通过拓扑图执行故障传播分析
 4. 生成结构化分析报告
 """
@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from .monitor.client import PrometheusClient, QueryResult
 from .monitor.config import MetricConfig, Severity, Threshold
+from .monitor.sliding_window import evaluate_sustained
 from .topology import DependencyGraph, FaultDiscovery, FaultReport
 
 
@@ -80,7 +81,7 @@ class OpsAgent:
 
     async def run(self, configs: list[MetricConfig]) -> AgentReport:
         """完整巡检流程：查询 → 评估 → 拓扑分析 → 报告。"""
-        # 1. 并发查询所有指标
+        # 1. 按阈值类型分流查询
         results = await self._query_all(configs)
 
         # 2. 评估阈值
@@ -111,27 +112,61 @@ class OpsAgent:
     # ------------------------------------------------------------------
 
     async def _query_all(self, configs: list[MetricConfig]) -> list[QueryResult]:
+        """分流查询：即时阈值走 instant query，持续阈值走 range query。"""
+        instant_cfgs: list[MetricConfig] = []
+        sustained_cfgs: list[MetricConfig] = []
+
+        for c in configs:
+            if any(t.is_sustained for t in c.thresholds):
+                sustained_cfgs.append(c)
+            else:
+                instant_cfgs.append(c)
+
         async with PrometheusClient(self.prometheus_url, **self.prometheus_kwargs) as client:
-            return await client.query_many(configs)
+            tasks: list[asyncio.Task] = []
+            if instant_cfgs:
+                tasks.append(asyncio.ensure_future(client.query_many(instant_cfgs)))
+            if sustained_cfgs:
+                tasks.append(asyncio.ensure_future(client.query_many_sustained(sustained_cfgs)))
+
+            gathered = await asyncio.gather(*tasks)
+
+        # 合并结果
+        results: list[QueryResult] = []
+        for group in gathered:
+            results.extend(group)
+        return results
 
     def _evaluate(
         self,
         configs: list[MetricConfig],
         results: list[QueryResult],
     ) -> list[MetricAlert]:
-        """评估每个结果是否触发阈值。"""
+        """评估每个结果是否触发阈值（兼容即时与持续判定）。"""
         alerts: list[MetricAlert] = []
         config_map = {c.id: c for c in configs}
 
         for result in results:
             config = config_map.get(result.config_id)
-            if config is None or result.error or result.value is None:
+            if config is None or result.error:
                 continue
 
             triggered: list[Threshold] = []
             for t in config.thresholds:
-                if _check_threshold(result.value, t):
-                    triggered.append(t)
+                if t.is_sustained:
+                    # 持续判定：滑动窗口评估
+                    if not result.values:
+                        continue
+                    sustained = evaluate_sustained(
+                        result.values, t.operator, t.value,
+                        t.window_duration, t.min_samples,
+                    )
+                    if sustained.triggered:
+                        triggered.append(t)
+                else:
+                    # 即时判定
+                    if result.value is not None and _check_threshold(result.value, t):
+                        triggered.append(t)
 
             if triggered:
                 alerts.append(MetricAlert(config=config, result=result, triggered=triggered))
@@ -158,7 +193,7 @@ class OpsAgent:
 
     def _build_summary(self, report: AgentReport) -> str:
         parts = [
-            f"=== 运维巡检报告 ===",
+            "=== 运维巡检报告 ===",
             f"指标总数: {report.total_metrics}",
             f"正常: {report.healthy_count}",
             f"异常: {len(report.alerts)}",
