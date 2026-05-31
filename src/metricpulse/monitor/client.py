@@ -1,4 +1,4 @@
-﻿"""PrometheusClient — HTTP API 客户端。
+"""PrometheusClient — HTTP API 客户端。
 
 封装 Prometheus HTTP API：instant query、range query、series 查询。
 """
@@ -8,13 +8,14 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 
 from .config import MetricConfig
 from .query import QueryBuilder
+from .sliding_window import parse_duration
 
 
 @dataclass
@@ -24,7 +25,7 @@ class QueryResult:
     config_id: str
     promql: str
     value: float | None = None           # instant query 的单值
-    values: list[tuple[float, str]] = field(default_factory=list)  # range query
+    values: list[tuple[float, str]] = field(default_factory=list)  # range query 时序数据
     raw: dict[str, Any] = field(default_factory=dict)
     timestamp: str = ""
     error: str | None = None
@@ -37,6 +38,7 @@ class PrometheusClient:
     - 基础认证 / Bearer Token
     - instant query / range query
     - 批量 MetricConfig 查询
+    - 持续阈值所需的 range query 快捷方法
     """
 
     def __init__(
@@ -77,7 +79,9 @@ class PrometheusClient:
     # 公开 API
     # ------------------------------------------------------------------
 
-    async def instant_query(self, config: MetricConfig, time_str: str | None = None) -> QueryResult:
+    async def instant_query(
+        self, config: MetricConfig, time_str: str | None = None
+    ) -> QueryResult:
         """执行 instant query。"""
         promql = QueryBuilder.build(config)
         params: dict[str, str] = {"query": promql}
@@ -102,6 +106,28 @@ class PrometheusClient:
         }
         return await self._execute(promql, config.id, "/api/v1/query_range", params)
 
+    async def range_query_sustained(
+        self,
+        config: MetricConfig,
+        window: str,
+        *,
+        step: str | None = None,
+    ) -> QueryResult:
+        """为持续阈值执行 range query。
+
+        自动计算 start = now - window, end = now。
+
+        Args:
+            config:  指标配置
+            window:  窗口时长，如 '5m'、'10m'
+            step:    Prometheus step，默认使用 client 的 default_step
+        """
+        window_secs = parse_duration(window)
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(seconds=window_secs)).isoformat()
+        end = now.isoformat()
+        return await self.range_query(config, start, end, step=step)
+
     async def query_many(
         self,
         configs: list[MetricConfig],
@@ -110,6 +136,23 @@ class PrometheusClient:
     ) -> list[QueryResult]:
         """并发执行多个 instant query。"""
         tasks = [self.instant_query(c, time_str) for c in configs]
+        return await asyncio.gather(*tasks)
+
+    async def query_many_sustained(
+        self,
+        configs: list[MetricConfig],
+        *,
+        step: str | None = None,
+    ) -> list[QueryResult]:
+        """并发执行多个 range query，每个取各自最长的持续窗口。"""
+        async def _query_one(c: MetricConfig) -> QueryResult:
+            w = c.max_sustained_window
+            if not w:
+                # 没有持续阈值，回退到 instant query
+                return await self.instant_query(c)
+            return await self.range_query_sustained(c, w, step=step)
+
+        tasks = [_query_one(c) for c in configs]
         return await asyncio.gather(*tasks)
 
     async def health(self) -> bool:
@@ -124,7 +167,9 @@ class PrometheusClient:
     # 内部
     # ------------------------------------------------------------------
 
-    async def _execute(self, promql: str, config_id: str, path: str, params: dict[str, str]) -> QueryResult:
+    async def _execute(
+        self, promql: str, config_id: str, path: str, params: dict[str, str]
+    ) -> QueryResult:
         result = QueryResult(config_id=config_id, promql=promql)
         try:
             resp = await self._client.get(path, params=params)

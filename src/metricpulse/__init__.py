@@ -1,4 +1,4 @@
-﻿"""metricpulse — 运维 Agent。
+"""metricpulse — 运维 Agent。
 
 整合 Prometheus 监控查询 + 业务拓扑图谱引擎，
 提供灵活可扩展的语义化指标配置与依赖链故障发现能力。
@@ -18,6 +18,7 @@ from .agent import AgentReport, MetricAlert, OpsAgent
 from .config_loader import load_env, load_metric_configs, load_topology
 from .monitor.config import MetricCategory, MetricConfig, Severity, Threshold
 from .monitor.client import PrometheusClient, QueryResult
+from .monitor.sliding_window import SustainedResult, evaluate_sustained, parse_duration
 from .topology import (
     DependencyGraph,
     Edge,
@@ -53,6 +54,9 @@ __all__ = [
     "Severity",
     "PrometheusClient",
     "QueryResult",
+    "SustainedResult",
+    "evaluate_sustained",
+    "parse_duration",
     # Topology
     "DependencyGraph",
     "Node",

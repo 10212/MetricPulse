@@ -1,4 +1,4 @@
-﻿"""YAML 配置加载器。
+"""YAML 配置加载器。
 
 从 config/metrics.yaml 和 config/topology.yaml 构建运行时对象。
 支持 .env 环境变量自动加载。
@@ -37,15 +37,16 @@ def load_metric_configs(path: str | Path) -> list[MetricConfig]:
     data = _read_yaml(path)
     configs: list[MetricConfig] = []
     for item in data.get("metrics", []):
-        thresholds = [
-            Threshold(
+        thresholds = []
+        for t in item.get("thresholds", []):
+            thresholds.append(Threshold(
                 operator=t["operator"],
                 value=float(t["value"]),
                 severity=Severity(t.get("severity", "warning")),
                 description=t.get("description", ""),
-            )
-            for t in item.get("thresholds", [])
-        ]
+                window_duration=t.get("window_duration", ""),
+                min_samples=int(t.get("min_samples", 0)),
+            ))
         configs.append(MetricConfig(
             id=item["id"],
             category=MetricCategory(item["category"]),

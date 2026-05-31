@@ -1,4 +1,4 @@
-﻿"""LangChain Tools — 将 Monitor/Topology 能力封装为 LLM 可调用工具。
+"""LangChain Tools — 将 Monitor/Topology 能力封装为 LLM 可调用工具。
 
 每个 Tool 是对底层 Monitor/Topology 模块的语义化封装，
 提供清晰的输入/输出签名，便于 LLM 理解和调用。
@@ -13,7 +13,8 @@ from typing import Any
 from langchain_core.tools import tool
 
 from ..monitor.client import PrometheusClient
-from ..monitor.config import MetricConfig, Severity
+from ..monitor.config import MetricConfig, Severity, Threshold
+from ..monitor.sliding_window import evaluate_sustained
 from ..topology.discovery import FaultDiscovery
 from ..topology.graph import DependencyGraph
 
@@ -33,6 +34,31 @@ def create_tools(
     config_map: dict[str, MetricConfig] = {c.id: c for c in metric_configs}
     discovery = FaultDiscovery(graph)
 
+    # ------------------------------------------------------------------
+    # 阈值评估辅助
+    # ------------------------------------------------------------------
+
+    async def _evaluate_metric(result, config: MetricConfig) -> list[str]:
+        """评估单个查询结果的阈值（兼容即时 + 持续判定）。
+
+        返回触发阈值的可读描述列表。
+        """
+        triggered: list[str] = []
+        for t in config.thresholds:
+            label = f"[{t.severity.value}] {t.description or f'{t.operator}{t.value}'}"
+            if t.is_sustained:
+                if result.values:
+                    sr = evaluate_sustained(
+                        result.values, t.operator, t.value,
+                        t.window_duration, t.min_samples,
+                    )
+                    if sr.triggered:
+                        triggered.append(f"{label} (窗口{t.window_duration}内违反{sr.window_max_count}次, 需>={sr.window_required})")
+            else:
+                if result.value is not None and _check_threshold(result.value, t):
+                    triggered.append(label)
+        return triggered
+
     # =====================================================================
     # Tool 1: 查询单个指标
     # =====================================================================
@@ -50,16 +76,16 @@ def create_tools(
             return f"未找到指标 '{metric_id}'。可用指标: {available}"
 
         async with PrometheusClient(prometheus_url) as client:
-            result = await client.instant_query(config)
+            has_sustained = any(t.is_sustained for t in config.thresholds)
+            if has_sustained:
+                result = await client.range_query_sustained(config, config.max_sustained_window)
+            else:
+                result = await client.instant_query(config)
 
         if result.error:
             return f"查询失败 [{config.id}]: {result.error}"
 
-        # 阈值评估
-        triggered = []
-        for t in config.thresholds:
-            if result.value is not None and _check_threshold(result.value, t):
-                triggered.append(f"[{t.severity.value}] {t.description or f'{t.operator}{t.value}'}")
+        triggered = await _evaluate_metric(result, config)
 
         lines = [
             f"指标: {config.description or config.id}",
@@ -87,10 +113,25 @@ def create_tools(
         service_configs = [c for c in metric_configs if c.service == service_name]
         if not service_configs:
             all_services = sorted({c.service for c in metric_configs if c.service})
-            return f"未找到服务 '{service_name}' 的指标配置。已配置指标的服务: {', '.join(all_services)}"
+            return (
+                f"未找到服务 '{service_name}' 的指标配置。"
+                f"已配置指标的服务: {', '.join(all_services)}"
+            )
 
         async with PrometheusClient(prometheus_url) as client:
-            results = await client.query_many(service_configs)
+            instant_cfgs = [c for c in service_configs if not any(t.is_sustained for t in c.thresholds)]
+            sustained_cfgs = [c for c in service_configs if any(t.is_sustained for t in c.thresholds)]
+
+            tasks = []
+            if instant_cfgs:
+                tasks.append(asyncio.ensure_future(client.query_many(instant_cfgs)))
+            if sustained_cfgs:
+                tasks.append(asyncio.ensure_future(client.query_many_sustained(sustained_cfgs)))
+
+            gathered = await asyncio.gather(*tasks)
+            results: list = []
+            for g in gathered:
+                results.extend(g)
 
         lines = [f"=== {service_name} 指标概览 ==="]
         for result in results:
@@ -101,14 +142,8 @@ def create_tools(
                 lines.append(f"  [{config.id}] 查询失败: {result.error}")
                 continue
 
-            status = "正常"
-            triggered = []
-            if result.value is not None:
-                for t in config.thresholds:
-                    if _check_threshold(result.value, t):
-                        triggered.append(f"[{t.severity.value}]{t.description or t.operator + str(t.value)}")
-            if triggered:
-                status = f"告警: {', '.join(triggered)}"
+            triggered = await _evaluate_metric(result, config)
+            status = f"告警: {', '.join(triggered)}" if triggered else "正常"
 
             lines.append(
                 f"  [{config.category.value}] {config.description}: "
@@ -138,7 +173,7 @@ def create_tools(
             f"=== {node.name} 拓扑分析 ===",
             f"类型: {node.node_type.value}",
             f"描述: {node.description}",
-            f"",
+            "",
             f"上游消费者 (依赖此服务，爆炸半径 {report.blast_radius}):",
         ]
         if report.impacted_services:
@@ -191,9 +226,13 @@ def create_tools(
         """列出所有已配置的监控指标及其阈值。"""
         lines = ["=== 已配置指标 ==="]
         for c in metric_configs:
-            thresholds = ", ".join(
-                f"[{t.severity.value}]{t.operator}{t.value}" for t in c.thresholds
-            ) or "无"
+            thresholds_parts: list[str] = []
+            for t in c.thresholds:
+                base = f"[{t.severity.value}]{t.operator}{t.value}"
+                if t.is_sustained:
+                    base += f" 持续({t.window_duration}, N>={t.min_samples})"
+                thresholds_parts.append(base)
+            thresholds = ", ".join(thresholds_parts) or "无"
             lines.append(
                 f"  [{c.category.value}] {c.id}"
                 f" | 服务={c.service}"
