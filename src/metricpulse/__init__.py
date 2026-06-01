@@ -1,15 +1,15 @@
-"""metricpulse — 运维 Agent。
+"""metricpulse - SRE Agent.
 
-整合 Prometheus 监控查询 + 业务拓扑图谱引擎，
-提供灵活可扩展的语义化指标配置与依赖链故障发现能力。
+Integrates Prometheus monitoring queries + business topology graph engine.
+Provides semantic metric configuration with dependency-chain fault discovery.
 
-内置 AI Agent 扩展层（基于 LangGraph），支持自然语言运维对话。
-支持 .env 文件管理环境变量（OPENAI_API_KEY 等）。
+Built-in AI Agent extension layer (LangGraph), supports natural language ops dialogue.
+Supports .env files for environment variables (OPENAI_API_KEY, etc.).
 
 Usage:
     from metricpulse import load_env, load_metric_configs, load_topology
 
-    load_env()                          # 自动加载 .env
+    load_env()
     configs = load_metric_configs("config/metrics.yaml")
     graph = load_topology("config/topology.yaml")
 """
@@ -29,7 +29,17 @@ from .topology import (
     NodeType,
 )
 
-# AI 扩展（可选依赖 langgraph / langchain）
+# MCP (optional)
+try:
+    from .mcp import MCPClient, MCPError, create_mcp_tools as _create_mcp_tools
+    _has_mcp = True
+except ImportError:
+    MCPClient = None  # type: ignore[assignment]
+    MCPError = None  # type: ignore[assignment]
+    _create_mcp_tools = None
+    _has_mcp = False
+
+# AI (optional)
 try:
     from .ai import AIChatAgent as _AIChatAgent
     AIChatAgent = _AIChatAgent
@@ -65,6 +75,10 @@ __all__ = [
     "EdgeWeight",
     "FaultDiscovery",
     "FaultReport",
+    # MCP (optional)
+    "MCPClient",
+    "MCPError",
+    "create_mcp_tools",
     # AI (optional)
     "AIChatAgent",
 ]

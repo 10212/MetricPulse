@@ -17,47 +17,39 @@ from ..monitor.config import MetricConfig, Severity, Threshold
 from ..monitor.sliding_window import evaluate_sustained
 from ..topology.discovery import FaultDiscovery
 from ..topology.graph import DependencyGraph
+from ..mcp.client import MCPClient
+from ..mcp.tools import create_mcp_tools
 
 
 # ---------------------------------------------------------------------------
-# 工具工厂 — 每个工具需要运行时 context（configs, graph, url），
-# 通过闭包注入而非每次传参，保持 tool 签名简洁。
+# 工具工厂 — 每个工具需要运行时 context（configs, graph, url），通过闭包注入而非每次传参，保持 tool 签名简洁。
 # ---------------------------------------------------------------------------
 
 def create_tools(
     metric_configs: list[MetricConfig],
     graph: DependencyGraph,
     prometheus_url: str,
+    mcp_config: dict | None = None,
 ) -> list:
-    """创建所有运维工具，注入运行时上下文。"""
+    """创建所有运维工具，注入运行时上下文。
 
+    Args:
+        metric_configs: 指标配置列表
+        graph: 拓扑图
+        prometheus_url: Prometheus URL
+        mcp_config: MCP 配置（可选）
+    """
     config_map: dict[str, MetricConfig] = {c.id: c for c in metric_configs}
     discovery = FaultDiscovery(graph)
 
-    # ------------------------------------------------------------------
-    # 阈值评估辅助
-    # ------------------------------------------------------------------
-
-    async def _evaluate_metric(result, config: MetricConfig) -> list[str]:
-        """评估单个查询结果的阈值（兼容即时 + 持续判定）。
-
-        返回触发阈值的可读描述列表。
-        """
-        triggered: list[str] = []
-        for t in config.thresholds:
-            label = f"[{t.severity.value}] {t.description or f'{t.operator}{t.value}'}"
-            if t.is_sustained:
-                if result.values:
-                    sr = evaluate_sustained(
-                        result.values, t.operator, t.value,
-                        t.window_duration, t.min_samples,
-                    )
-                    if sr.triggered:
-                        triggered.append(f"{label} (窗口{t.window_duration}内违反{sr.window_max_count}次, 需>={sr.window_required})")
-            else:
-                if result.value is not None and _check_threshold(result.value, t):
-                    triggered.append(label)
-        return triggered
+    # 初始化 MCP 客户端（如果配置了）
+    mcp_clients = {}
+    if mcp_config:
+        for name, config in mcp_config.get("services", {}).items():
+            mcp_clients[name] = MCPClient(
+                url=config["url"],
+                api_key=config.get("api_key"),
+            )
 
     # =====================================================================
     # Tool 1: 查询单个指标
@@ -241,13 +233,70 @@ def create_tools(
             )
         return "\n".join(lines)
 
-    return [
+    # =====================================================================
+    # Tool 6: 调用 MCP 服务
+    # =====================================================================
+    if mcp_config:
+        @tool
+        async def call_mcp_service(
+            service_name: str,
+            tool_name: str,
+            arguments: dict,
+        ) -> str:
+            """调用指定的 MCP 服务。
+
+            Args:
+                service_name: 在配置中定义的服务名称
+                tool_name: MCP 工具名称
+                arguments: 工具参数
+            """
+            if service_name not in mcp_clients:
+                return f"未找到 MCP 服务 '{service_name}'"
+
+            client = mcp_clients[service_name]
+            try:
+                result = await client.call_tool(tool_name, arguments)
+                return json.dumps(result, indent=2, ensure_ascii=False)
+            except Exception as e:
+                return f"调用 MCP 服务失败: {e}"
+
+    # =====================================================================
+    # 工具列表
+    # =====================================================================
+    tools = [
         query_metric,
         query_service_metrics,
         analyze_service_topology,
         list_services,
         list_metrics,
     ]
+
+    if mcp_config:
+        tools.append(call_mcp_service)
+
+    return tools
+
+
+def _evaluate_metric(result, config: MetricConfig) -> list[str]:
+    """评估单个查询结果的阈值（兼容即时 + 持续判定）。
+
+    返回触发阈值的可读描述列表。
+    """
+    triggered: list[str] = []
+    for t in config.thresholds:
+        label = f"[{t.severity.value}] {t.description or f'{t.operator}{t.value}'}"
+        if t.is_sustained:
+            if result.values:
+                sr = evaluate_sustained(
+                    result.values, t.operator, t.value,
+                    t.window_duration, t.min_samples,
+                )
+                if sr.triggered:
+                    triggered.append(f"{label} (窗口{t.window_duration}内违反{sr.window_max_count}次, 需>={sr.window_required})")
+        else:
+            if result.value is not None and _check_threshold(result.value, t):
+                triggered.append(label)
+    return triggered
 
 
 def _check_threshold(value: float, t: Any) -> bool:

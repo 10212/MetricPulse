@@ -1,50 +1,43 @@
-﻿"""LangGraph Agent 状态定义。
+"""LangGraph Agent state definition.
 
-AgentState 作为 LangGraph 图的共享状态，
-承载对话消息、监控配置、拓扑图谱、查询结果等上下文。
+AgentState serves as shared state across the LangGraph execution,
+carrying conversation messages, monitoring configs, topology graphs,
+and loop-prevention metadata.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import MessagesState
+from langgraph.graph.message import add_messages
 
 from ..monitor.config import MetricConfig
 from ..topology.graph import DependencyGraph
 
 
 class AgentState(MessagesState):
-    """运维 AI Agent 的 LangGraph 状态。
+    """SRE AI Agent LangGraph state.
 
-    继承 MessagesState，自动包含 messages 字段。
-    额外扩展运维专属上下文。
+    Inherits MessagesState (auto-manages messages via add_messages reducer).
+    Extended with ops-specific context.
     """
 
-    # ---- 配置上下文（只读，运行时注入） ----
+    # ---- configuration context (read-only, injected at runtime) ----
     metric_configs: list[MetricConfig]
-    """已加载的指标配置列表。"""
-
     dependency_graph: DependencyGraph
-    """业务拓扑图谱。"""
-
     prometheus_url: str
-    """Prometheus 端点地址。"""
 
-    # ---- 运行时上下文（逐轮累积） ----
+    # ---- runtime context (accumulated per turn) ----
     query_results: dict[str, Any]
-    """已完成的 Prometheus 查询结果，key = metric_id。"""
-
     topology_analysis: dict[str, Any]
-    """已执行的拓扑分析结果。"""
-
     agent_report_summary: str
-    """最近一次 OpsAgent.run 的摘要。"""
 
-    # ---- 迭代控制 ----
+    # ---- loop prevention ----
     iteration_count: int
-    """当前迭代次数，防止无限循环。"""
+    tool_call_history: list[str]
+    max_iterations: int
 
     @classmethod
     def create(
@@ -52,8 +45,10 @@ class AgentState(MessagesState):
         metric_configs: list[MetricConfig],
         dependency_graph: DependencyGraph,
         prometheus_url: str,
+        *,
+        max_iterations: int = 10,
     ) -> dict[str, Any]:
-        """工厂方法：创建初始状态字典。"""
+        """Factory: create initial state dict."""
         return {
             "messages": [],
             "metric_configs": metric_configs,
@@ -63,21 +58,16 @@ class AgentState(MessagesState):
             "topology_analysis": {},
             "agent_report_summary": "",
             "iteration_count": 0,
+            "tool_call_history": [],
+            "max_iterations": max_iterations,
         }
 
 
 # ---------------------------------------------------------------------------
-# LangGraph 状态注解（TypedDict 风格，供 graph.py 使用）
+# TypedDict form for LangGraph StateGraph type annotations
 # ---------------------------------------------------------------------------
 
-from typing import Annotated, TypedDict
-
-from langgraph.graph.message import add_messages
-
-
 class AgentStateDict(TypedDict, total=False):
-    """AgentState 的 TypedDict 表示，用于 LangGraph StateGraph 类型标注。"""
-
     messages: Annotated[list, add_messages]
     metric_configs: list[MetricConfig]
     dependency_graph: DependencyGraph
@@ -86,3 +76,5 @@ class AgentStateDict(TypedDict, total=False):
     topology_analysis: dict[str, Any]
     agent_report_summary: str
     iteration_count: int
+    tool_call_history: list[str]
+    max_iterations: int
