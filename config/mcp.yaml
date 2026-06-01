@@ -1,0 +1,16 @@
+# MCP 服务配置文件
+
+# MCP 服务列表
+services:
+  # 示例配置中心服务
+  config_service:
+    url: "http://127.0.0.1:8766/mcp"
+    api_key: "sk-xxx"  # 可选
+
+  # 示例日志服务
+  log_service:
+    url: "http://127.0.0.1:8767/mcp"
+    api_key: "sk-yyy"  # 可选
+
+# 默认服务（可选）
+default_service: "config_service"

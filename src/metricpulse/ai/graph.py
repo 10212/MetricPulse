@@ -1,19 +1,23 @@
-﻿"""LangGraph 图编排 — 运维 Agent 的推理-行动循环。
+"""LangGraph agent graph — reasoning-action loop with loop prevention.
 
-图结构:
-    START → agent (LLM 推理)
-              ├─ 有 tool_calls → tools → agent (循环)
-              └─ 无 tool_calls → END
+Graph structure:
+    START -> agent (LLM reasoning)
+              |-- has tool_calls -> tools -> agent (loop)
+              +-- no tool_calls or loop detected -> END
 
-每个节点都是纯函数：接收 state dict，返回 state 更新的 dict。
+Loop prevention (three layers):
+    1. Hard iteration cap:       iteration_count >= max_iterations -> END
+    2. Repeated call detection:   same tool+args >= 3 times in last 5 -> END
+    3. Agent awareness:           system prompt warns about near-limit
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -24,109 +28,210 @@ from .tools import create_tools
 
 
 # ---------------------------------------------------------------------------
-# 系统提示词
+# loop detection constants
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """你是一个运维 AI Agent，负责分析和诊断分布式系统的运行状态。
-
-你的能力：
-1. 查询 Prometheus 指标 —— 使用 query_metric / query_service_metrics
-2. 分析业务拓扑 —— 使用 analyze_service_topology / list_services / list_metrics
-
-工作原则：
-- 收到告警类问题时，先查询相关指标，再分析拓扑依赖，综合给出诊断结论
-- 多步推理：如果发现指标异常，主动检查上下游依赖找出根因
-- 回答要简洁专业，直击要点，不要过度解释
-- 如果没有发现异常，如实告知当前状态正常
-- 当用户问"当前状态如何"时，先 list_services，再逐服务检查 query_service_metrics
-
-当前环境包含以下上下文，你可以在需要时直接使用："""
+LOOP_WINDOW = 5       # look back this many recent tool calls
+LOOP_THRESHOLD = 3     # same tool+args appearing this many times = loop
 
 
 # ---------------------------------------------------------------------------
-# 节点函数
+# system prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """You are an SRE AI Agent responsible for diagnosing distributed system health.
+
+Your capabilities:
+1. Query Prometheus metrics — use query_metric / query_service_metrics
+2. Analyze service topology — use analyze_service_topology / list_services / list_metrics
+3. Call MCP services — use call_mcp_service if available
+
+Guidelines:
+- Be concise. After 3–4 tool calls you should have enough data to form a conclusion.
+- For "current status" queries, call list_services then query_service_metrics once per affected service.
+- **IMPORTANT**: You have a limited number of interactions. Do NOT call the same tool with the same
+  arguments repeatedly. If you find yourself repeating, summarize what you know and stop.
+- If you detect an anomaly, mention the metric, its current value, the violated threshold,
+  and the impacted services from topology analysis."""
+
+
+# ---------------------------------------------------------------------------
+# system message builder
 # ---------------------------------------------------------------------------
 
 def _build_system_message(state: AgentStateDict) -> str:
-    """从 state 构建注入上下文的系统消息。"""
-    configs: list[MetricConfig] = state.get("metric_configs", [])
-    graph: DependencyGraph = state.get("dependency_graph", DependencyGraph())
+    configs = state.get("metric_configs", [])
+    dep_graph = state.get("dependency_graph", DependencyGraph())
+    mcp_cfg = state.get("mcp_config", {})
 
-    services = ", ".join(n.name for n in graph.nodes) if graph.node_count > 0 else "(未配置)"
-    metrics = ", ".join(c.id for c in configs) if configs else "(未配置)"
+    svcs = ", ".join(n.name for n in dep_graph.nodes) if dep_graph.node_count > 0 else "(none)"
+    mets = ", ".join(c.id for c in configs) if configs else "(none)"
+
+    mcp_info = ""
+    if mcp_cfg:
+        names = ", ".join(mcp_cfg.get("services", {}).keys())
+        mcp_info = f"\n- MCP services: {names}"
 
     return (
         f"{SYSTEM_PROMPT}\n"
-        f"- 拓扑服务 ({graph.node_count}个): {services}\n"
-        f"- 监控指标 ({len(configs)}个): {metrics}\n"
+        f"- Topology ({dep_graph.node_count}): {svcs}\n"
+        f"- Metrics ({len(configs)}): {mets}"
+        f"{mcp_info}\n"
     )
 
 
-def create_agent_node(llm: BaseChatModel):
-    """创建 agent 推理节点（闭包注入 LLM）。"""
+# ---------------------------------------------------------------------------
+# loop detection
+# ---------------------------------------------------------------------------
+
+def _detect_loop(history: list[str]) -> bool:
+    """Return True if any tool+args signature appears >= LOOP_THRESHOLD times
+    within the last LOOP_WINDOW calls."""
+    if len(history) < LOOP_THRESHOLD:
+        return False
+    recent = history[-LOOP_WINDOW:]
+    counts = Counter(recent)
+    return any(c >= LOOP_THRESHOLD for c in counts.values())
+
+
+def _tool_call_signature(tool_call) -> str:
+    """Create a stable signature from a tool call: 'tool_name::args_json'."""
+    try:
+        args_str = str(sorted(tool_call.get("args", {}).items()))
+    except Exception:
+        args_str = str(tool_call)
+    return f"{tool_call.get('name', '?')}::{args_str}"
+
+
+# ---------------------------------------------------------------------------
+# agent node
+# ---------------------------------------------------------------------------
+
+def create_agent_node(llm: BaseChatModel, max_iterations: int = 10):
+    """Create the LLM reasoning node (closure over model and config)."""
 
     async def agent_node(state: AgentStateDict) -> dict[str, Any]:
         messages = state.get("messages", [])
         iteration = state.get("iteration_count", 0)
+        max_iter = state.get("max_iterations", max_iterations)
 
-        # 首轮注入 system message
+        # Layer 1: hard cap — don't invoke LLM if already at limit
+        if iteration >= max_iter:
+            return {
+                "messages": [
+                    AIMessage(content=(
+                        f"[Reached the maximum of {max_iter} iterations. "
+                        "Please review the information gathered above and draw conclusions.]"
+                    ))
+                ],
+                "iteration_count": iteration + 1,
+            }
+
+        # Build system message on first iteration
         if iteration == 0:
-            system_msg = SystemMessage(content=_build_system_message(state))
-            messages = [system_msg] + list(messages)
+            sys_msg = SystemMessage(content=_build_system_message(state))
+            messages = [sys_msg] + list(messages)
 
-        response: AIMessage = await llm.ainvoke(messages)
+        # Warn the agent if approaching the limit
+        remaining = max_iter - iteration
+        if remaining <= 3:
+            warn = SystemMessage(content=(
+                f"[System note] You have {remaining} interactions remaining. "
+                "Please prioritize drawing a conclusion within the next message."
+            ))
+            messages = list(messages) + [warn]
+
+        resp: AIMessage = await llm.ainvoke(messages)
+
+        # Track tool call history for loop detection
+        history = list(state.get("tool_call_history", []))
+        if resp.tool_calls:
+            for tc in resp.tool_calls:
+                history.append(_tool_call_signature(tc))
+
         return {
-            "messages": [response],
+            "messages": [resp],
             "iteration_count": iteration + 1,
+            "tool_call_history": history,
         }
 
     return agent_node
 
 
 # ---------------------------------------------------------------------------
-# 条件边
+# conditional edge
 # ---------------------------------------------------------------------------
 
 def should_continue(state: AgentStateDict) -> Literal["tools", "__end__"]:
-    """决定下一步：继续调用工具 or 结束。"""
+    """Decide next step: call tools, or end (natural stop / loop / cap)."""
     messages = state.get("messages", [])
     if not messages:
         return "__end__"
 
     last = messages[-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
-        return "tools"
-    return "__end__"
+
+    # Natural stop: agent produced a reply without tool calls
+    if not isinstance(last, AIMessage) or not last.tool_calls:
+        return "__end__"
+
+    # Layer 1: hard iteration cap
+    iteration = state.get("iteration_count", 0)
+    max_iter = state.get("max_iterations", 10)
+    if iteration >= max_iter:
+        return "__end__"
+
+    # Layer 2: repeated call loop detection
+    history = state.get("tool_call_history", [])
+    if _detect_loop(history):
+        return "__end__"
+
+    return "tools"
 
 
 # ---------------------------------------------------------------------------
-# 图构建
+# graph builder
 # ---------------------------------------------------------------------------
-
-MAX_ITERATIONS = 10
-
 
 def build_graph(
     llm: BaseChatModel,
     metric_configs: list[MetricConfig],
     graph: DependencyGraph,
     prometheus_url: str,
-) -> StateGraph:
-    """构建并编译运维 Agent 的 LangGraph 图。
+    mcp_config: dict | None = None,
+    *,
+    max_iterations: int = 10,
+):
+    """Build and compile the SRE Agent LangGraph.
 
-    返回编译后的 StateGraph，可直接 .ainvoke() / .astream()。
+    Args:
+        llm:             The language model to use
+        metric_configs:   Metric configurations
+        graph:            Dependency topology graph
+        prometheus_url:   Prometheus endpoint
+        mcp_config:       Optional MCP service configuration
+        max_iterations:   Max agent→tools→agent cycles (default 10)
+
+    Returns:
+        Compiled StateGraph ready for .ainvoke() / .astream()
     """
-    tools = create_tools(metric_configs, graph, prometheus_url)
+    tools = create_tools(
+        metric_configs=metric_configs,
+        graph=graph,
+        prometheus_url=prometheus_url,
+        mcp_config=mcp_config,
+    )
     llm_with_tools = llm.bind_tools(tools)
 
-    # 构建图
     workflow = StateGraph(AgentStateDict)
 
-    workflow.add_node("agent", create_agent_node(llm_with_tools))
+    workflow.add_node("agent", create_agent_node(llm_with_tools, max_iterations))
     workflow.add_node("tools", ToolNode(tools))
 
     workflow.set_entry_point("agent")
-    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "__end__": END})
+    workflow.add_conditional_edges(
+        "agent", should_continue,
+        {"tools": "tools", "__end__": END},
+    )
     workflow.add_edge("tools", "agent")
 
     return workflow.compile()

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from metricpulse.monitor.config import MetricCategory, MetricConfig, Severity, Threshold
 from metricpulse.topology import DependencyGraph, Edge, EdgeWeight, Node, NodeType
+from metricpulse.mcp.client import MCPClient
 
 
 def load_env(env_path: str | Path | None = None) -> None:
@@ -83,6 +84,19 @@ def load_topology(path: str | Path) -> DependencyGraph:
         for e in data.get("edges", [])
     ]
     return DependencyGraph().build(nodes, edges)
+
+
+def load_mcp_config(path: str | Path) -> dict:
+    """从 YAML 加载 MCP 配置。
+
+    Returns:
+        dict: 包含服务配置的字典
+    """
+    data = _read_yaml(path)
+    return {
+        "services": data.get("services", {}),
+        "default_service": data.get("default_service", None),
+    }
 
 
 def _read_yaml(path: str | Path) -> dict:
